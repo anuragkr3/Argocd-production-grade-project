@@ -1,19 +1,34 @@
-# Security Group for Bastion
-# - Allows SSH access to the bastion host. For production, replace 0.0.0.0/0 with
-#   a limited CIDR (your office/home IP) or a VPN/security appliance.
+# Generate a key and registers it in AWS.
+resource "tls_private_key" "bastion_key" {
+  algorithm = "RSA"
+  rsa_bits  = 4096
+}
+
+resource "aws_key_pair" "bastion_keypair" {
+  key_name   = "bastion-KEY"
+  public_key = tls_private_key.bastion_key.public_key_openssh
+}
+
+# Save the private key locally
+resource "local_file" "bastion_private_key" {
+  content         = tls_private_key.bastion_key.private_key_pem
+  filename        = "bastion-KEY.pem"
+  file_permission = "0400"
+}
+
+# Allow SSH from anywhere — restrict to your IP in production
 resource "aws_security_group" "bastion_sg" {
   name   = "bastion-sg"
   vpc_id = module.vpc.vpc_id
 
   ingress {
-    description = "SSH from my IP"
+    description = "SSH access"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] # TODO: Replace with your IP for better security
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
-  # Allow all outbound traffic from the bastion (typical for jump hosts)
   egress {
     from_port   = 0
     to_port     = 0
@@ -26,24 +41,19 @@ resource "aws_security_group" "bastion_sg" {
   }
 }
 
-
-# Bastion Host
-# - Uses the community module to create a lightweight EC2 instance used as a jump host.
-# - Key considerations: restrict SSH access (ingress above), ensure key_name exists,
-#   and monitor/rotate access keys.
+# Public EC2 instance used as a jump host into the private network
 module "bastion_host" {
   source  = "terraform-aws-modules/ec2-instance/aws"
 
   name          = "bastion-host"
   ami           = data.aws_ami.ubuntu.id
   instance_type = "t3.micro"
-  key_name      = "projects"         # SSH key pair name present in the AWS account
+  key_name      = aws_key_pair.bastion_keypair.key_name
   monitoring    = true
 
-  subnet_id              = element(module.vpc.public_subnets, 0)
-  vpc_security_group_ids = [aws_security_group.bastion_sg.id]
-
-  associate_public_ip_address = true  # Required to SSH directly from the internet
+  subnet_id                   = element(module.vpc.public_subnets, 0)
+  vpc_security_group_ids      = [aws_security_group.bastion_sg.id]
+  associate_public_ip_address = true
 
   tags = {
     Terraform   = "true"
